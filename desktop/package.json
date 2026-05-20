@@ -1,6 +1,6 @@
 {
   "name": "clauderelay-desktop",
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "ClaudeRelay Desktop — Claude Code 和 Codex 的万能代理桌面客户端",
   "author": "ClaudeRelay",
   "main": "electron/main.js",

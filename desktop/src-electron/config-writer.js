@@ -9,11 +9,13 @@ const { exec } = require('child_process');
 // Codex (Go) 的 net/http 默认读取系统代理，NO_PROXY 让它对本地地址直连
 function ensureNoProxy() {
   if (process.platform !== 'win32') return;
-  // NO_PROXY 已正确设置则跳过
-  if (process.env.NO_PROXY === 'localhost,127.0.0.1') return;
-  exec('setx NO_PROXY "localhost,127.0.0.1"', (err) => {
-    if (err) return;
-    process.env.NO_PROXY = 'localhost,127.0.0.1';
+  // 先设进程级环境变量，影响当前 Electron 进程及其子进程
+  process.env.NO_PROXY = 'localhost,127.0.0.1';
+  // 通过注册表检查系统级持久化 NO_PROXY，避免重复写入
+  exec('reg query HKCU\\Environment /v NO_PROXY', (err, stdout) => {
+    if (!err && stdout.includes('localhost,127.0.0.1')) return;
+    // 系统级未设或值不对，setx 持久化写入用户环境变量
+    exec('setx NO_PROXY "localhost,127.0.0.1"');
   });
 }
 
