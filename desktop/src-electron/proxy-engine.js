@@ -21,6 +21,8 @@ const { StreamTransformer } = require(resolveSrc('stream'));
 const { responsesToChat } = require(resolveSrc('responses'));
 const { chatToResponses } = require(resolveSrc('responses-response'));
 const { ResponsesStreamTransformer } = require(resolveSrc('responses-stream'));
+const { openaiToGoogle, googleToOpenAI } = require(resolveSrc('google-request'));
+const { GoogleStreamTransformer } = require(resolveSrc('google-stream'));
 const { estimateTokens, countTokens } = require(resolveSrc('server'));
 const { resolveRoutingKey, getCategoryRoutingKeys, findProviderByName, getModels, buildApiUrl, logUsage } = require('./data-store');
 
@@ -86,21 +88,36 @@ function resolveBackend(modelRoutingKey, category) {
 // ====== 后端请求 ======
 
 function fetchBackend(backend, openaiBody) {
-  const endpointPath = backend.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
+  let endpointPath, bodyToSend;
+  if (backend.protocol === 'google') {
+    endpointPath = `/v1/models/${backend.modelName}:generateContent`;
+    bodyToSend = openaiToGoogle(openaiBody);
+  } else if (backend.protocol === 'anthropic') {
+    endpointPath = '/v1/messages';
+    bodyToSend = { ...openaiBody, model: backend.modelName };
+  } else {
+    endpointPath = '/v1/chat/completions';
+    bodyToSend = { ...openaiBody, model: backend.modelName };
+  }
   const chatUrl = buildApiUrl(backend.apiBaseUrl, endpointPath);
   const url = new URL(chatUrl);
   const isHttps = url.protocol === 'https:';
   const transport = isHttps ? https : http;
-  const bodyToSend = { ...openaiBody, model: backend.modelName };
   const body = JSON.stringify(bodyToSend);
+  const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) };
+  if (backend.protocol === 'google') {
+    headers['x-goog-api-key'] = backend.apiKey;
+  } else {
+    headers['Authorization'] = `Bearer ${backend.apiKey}`;
+  }
   const options = {
     hostname: url.hostname, port: url.port || (isHttps ? 443 : 80),
     path: url.pathname + url.search, method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Authorization': `Bearer ${backend.apiKey}` },
+    headers,
     timeout: 120000,
     rejectUnauthorized: false,
   };
-  proxyLog(`[proxy] → POST ${url.hostname}${options.path} model=${backend.modelName} enable_prompt_cache=${bodyToSend.enable_prompt_cache}`);
+  proxyLog(`[proxy] → POST ${url.hostname}${options.path} model=${backend.modelName} protocol=${backend.protocol}`);
 
   return new Promise((resolve, reject) => {
     const proxyReq = transport.request(options, (proxyRes) => {
@@ -108,7 +125,14 @@ function fetchBackend(backend, openaiBody) {
       proxyRes.on('data', chunk => { data += chunk; });
       proxyRes.on('end', () => {
         proxyLog(`[proxy] ← ${proxyRes.statusCode} (${data.length} bytes)`);
-        try { resolve({ status: proxyRes.statusCode, headers: proxyRes.headers, body: JSON.parse(data) }); }
+        try {
+          let parsed = JSON.parse(data);
+          // Google 协议响应转回 OpenAI 格式
+          if (backend.protocol === 'google' && proxyRes.statusCode === 200) {
+            parsed = googleToOpenAI(parsed);
+          }
+          resolve({ status: proxyRes.statusCode, headers: proxyRes.headers, body: parsed });
+        }
         catch { resolve({ status: proxyRes.statusCode, headers: proxyRes.headers, body: data }); }
       });
     });
@@ -120,6 +144,10 @@ function fetchBackend(backend, openaiBody) {
 }
 
 function streamFetchBackend(backend, openaiBody, res, createTransformer, routingKey, category) {
+  // Google 协议走专用的 streamGoogleRelay
+  if (backend.protocol === 'google') {
+    return streamGoogleRelay(backend, openaiBody, res, createTransformer, routingKey, category);
+  }
   const endpointPath = backend.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
   const chatUrl = buildApiUrl(backend.apiBaseUrl, endpointPath);
   const url = new URL(chatUrl);
@@ -444,6 +472,161 @@ function streamAnthropicRelay(backend, anthropicBody, res, routingKey, category)
   proxyReq.end();
 }
 
+// ====== Google Gemini 流式转发 ======
+
+function streamGoogleRelay(backend, openaiBody, res, createTransformer, routingKey, category) {
+  const googleBody = openaiToGoogle(openaiBody);
+  const endpointPath = `/v1/models/${backend.modelName}:streamGenerateContent?alt=sse`;
+  const chatUrl = buildApiUrl(backend.apiBaseUrl, endpointPath);
+  const url = new URL(chatUrl);
+  const isHttps = url.protocol === 'https:';
+  const transport = isHttps ? https : http;
+  const body = JSON.stringify(googleBody);
+  const streamId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  proxyLog(`[stream ${streamId}] Google relay: model=${backend.modelName} contents=${googleBody.contents?.length || 0}`);
+  // 调试：检查 contents 中是否有 functionCall 带 thoughtSignature
+  if (googleBody.contents) {
+    for (let i = 0; i < googleBody.contents.length; i++) {
+      const c = googleBody.contents[i];
+      if (c.role === 'model' && c.parts) {
+        for (const p of c.parts) {
+          if (p.functionCall) {
+            proxyLog(`[stream ${streamId}] Google content[${i}] functionCall=${p.functionCall.name} hasThoughtSig=${!!p.thoughtSignature}`);
+          }
+        }
+      }
+    }
+  }
+
+  const options = {
+    hostname: url.hostname, port: url.port || (isHttps ? 443 : 80),
+    path: url.pathname + url.search, method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'x-goog-api-key': backend.apiKey, 'Accept': 'text/event-stream' },
+    timeout: 0,
+    rejectUnauthorized: false,
+  };
+
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+
+  const googleTransformer = new GoogleStreamTransformer(backend.modelName);
+  googleTransformer._debugLog = (msg) => proxyLog(`[stream ${streamId}] GoogleTransformer: ${msg}`);
+  const outerTransformer = createTransformer();
+  let buffer = '';
+  let streamEnded = false;
+
+  const heartbeat = setInterval(() => {
+    if (!streamEnded) {
+      try { res.write(': heartbeat\n\n'); } catch {}
+    }
+  }, 15000);
+
+  const endStream = (reason) => {
+    if (streamEnded) return;
+    streamEnded = true;
+    clearInterval(heartbeat);
+    // 强制完成外层 transformer
+    if (!outerTransformer.finished) {
+      try {
+        const events = outerTransformer.processChunk({ choices: [{ delta: {}, finish_reason: 'stop' }] });
+        for (const evt of events) res.write(evt);
+      } catch {}
+    }
+    const stats = googleTransformer.getStats();
+    if (stats.inputTokens > 0 || stats.outputTokens > 0) {
+      logUsage({
+        model: routingKey || backend.modelName, category,
+        inputTokens: stats.inputTokens,
+        cachedInputTokens: 0,
+        outputTokens: stats.outputTokens,
+      });
+    }
+    proxyLog(`[stream ${streamId}] Google end reason=${reason} usage=${JSON.stringify(stats)}`);
+    try { res.end(); } catch {}
+  };
+
+  res.on('close', () => {
+    if (!streamEnded) {
+      try { proxyReq.destroy(); } catch {}
+      endStream('client-close');
+    }
+  });
+
+  const proxyReq = transport.request(options, (proxyRes) => {
+    proxyLog(`[stream ${streamId}] Google 后端响应 status=${proxyRes.statusCode}`);
+    if (proxyRes.statusCode !== 200) {
+      let data = '';
+      proxyRes.on('data', chunk => { data += chunk; });
+      proxyRes.on('end', () => {
+        proxyLog(`[stream ${streamId}] Google 错误: ${data.substring(0, 500)}`);
+        res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: `Google 后端返回 ${proxyRes.statusCode}: ${data.substring(0, 200)}` } })}\n\n`);
+        endStream('backend-non200');
+      });
+      return;
+    }
+
+    if (proxyReq.socket) proxyReq.socket.setKeepAlive(true, 60000);
+
+    proxyRes.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        // Google 不发 [DONE]，跳过
+        if (dataStr === '[DONE]') continue;
+        try {
+          const googleChunk = JSON.parse(dataStr);
+          // Google → OpenAI chunk 对象
+          const openaiChunks = googleTransformer.processChunk(googleChunk);
+          for (const oc of openaiChunks) {
+            // 喂入外层 transformer（如 ResponsesStreamTransformer）
+            try {
+              const events = outerTransformer.processChunk(oc);
+              for (const evt of events) res.write(evt);
+            } catch {}
+          }
+        } catch {}
+      }
+    });
+
+    proxyRes.on('end', () => {
+      // 处理残留 buffer
+      if (buffer.trim() && buffer.trim().startsWith('data:')) {
+        try {
+          const dataStr = buffer.trim().slice(5).trim();
+          const googleChunk = JSON.parse(dataStr);
+          const openaiChunks = googleTransformer.processChunk(googleChunk);
+          for (const oc of openaiChunks) {
+            try {
+              const events = outerTransformer.processChunk(oc);
+              for (const evt of events) res.write(evt);
+            } catch {}
+          }
+        } catch {}
+      }
+      endStream('backend-end');
+    });
+
+    proxyRes.on('error', (err) => {
+      proxyLog(`[stream ${streamId}] Google 流错误: ${err.message}`);
+      endStream('backend-error');
+    });
+  });
+
+  proxyReq.on('error', (err) => {
+    proxyLog(`[stream ${streamId}] Google 连接失败: ${err.message}`);
+    if (!streamEnded) {
+      res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: `Google 后端连接失败: ${err.message}` } })}\n\n`);
+      endStream('upstream-error');
+    }
+  });
+
+  proxyReq.write(body);
+  proxyReq.end();
+}
+
 // ====== 创建代理服务 ======
 
 function createCodexServer(port) {
@@ -513,8 +696,8 @@ function createCodexServer(port) {
           return;
         }
 
+        // Responses → Chat Completions 转换（OpenAI 和 Google 协议共用）
         {
-          // OpenAI 后端：Responses → Chat Completions 转换
           let openaiBody;
           if (isResponses) {
             openaiBody = responsesToChat(responsesBody);
@@ -658,6 +841,16 @@ function createCCServer(port) {
         }
 
         proxyLog(`[claude] ← Anthropic routing=${anthropicBody.model} → ${backend.apiBaseUrl} model=${backend.modelName} stream=${anthropicBody.stream}`);
+
+        if (backend.protocol === 'google') {
+          // Google 协议暂不支持 Claude Code
+          proxyLog(`[claude] 拒绝 Google 后端: ${backend.apiBaseUrl}`);
+          const err = errorResponse('invalid_request_error',
+            `Google (Gemini) 协议暂不支持 Claude Code 客户端（${backend.modelName}），请使用 Codex 客户端。`,
+            400);
+          res.writeHead(err.statusCode, err.headers); res.end(err.body);
+          return;
+        }
 
         if (backend.protocol === 'anthropic') {
           // Anthropic 后端：原样透传，不做格式转换

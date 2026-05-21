@@ -4,6 +4,7 @@ import * as api from '../api';
 const PROTOCOLS = [
   { value: 'openai', label: 'OpenAI (Chat Completions)' },
   { value: 'anthropic', label: 'Anthropic (Messages)' },
+  { value: 'google', label: 'Google (Gemini)' },
 ];
 
 const s = {
@@ -215,7 +216,9 @@ export default function ProviderTab() {
             <div style={s.cardBd}>
               <div style={{ fontSize: 12, color: '#787c99', marginBottom: 8 }}>
                 <span>协议: {p.protocol} &nbsp;|&nbsp; 端点: {
-                  p.protocol === 'anthropic' ? `${p.apiBaseUrl.replace(/\/$/, '')}/v1/messages` : `${p.apiBaseUrl.replace(/\/$/, '')}/v1/chat/completions`
+                  p.protocol === 'anthropic' ? `${p.apiBaseUrl.replace(/\/$/, '')}/v1/messages`
+                  : p.protocol === 'google' ? `${p.apiBaseUrl.replace(/\/$/, '')}/v1/models/<模型名>:streamGenerateContent`
+                  : `${p.apiBaseUrl.replace(/\/$/, '')}/v1/chat/completions`
                 }</span>
                 <button style={{ ...s.btn, ...s.btnSmOut, marginLeft: 12 }} onClick={() => testConnection(p.id)}>
                   {testResults[p.id]?.testing ? '测试中...' : '测试连接'}
@@ -283,7 +286,8 @@ export default function ProviderTab() {
             </select>
             <div style={{ ...s.hint, marginBottom: 16 }}>
               OpenAI: 自动拼接 /chat/completions，支持获取模型列表<br />
-              Anthropic: 自动拼接 /messages，需手动输入模型名验证
+              Anthropic: 自动拼接 /messages，需手动输入模型名验证<br />
+              Google (Gemini): 自动拼接 /v1/models/&lt;模型名&gt;:streamGenerateContent
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button style={{ ...s.btn, ...s.btnOut }} onClick={() => setShowForm(false)}>取消</button>

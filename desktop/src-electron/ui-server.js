@@ -174,6 +174,9 @@ function apiRouter(req, res, url, method, body, codexPort, ccPort) {
     if (provider.protocol === 'anthropic') {
       return { data: { models: [], hint: 'Anthropic 协议不支持获取模型列表，请手动输入模型名验证' } };
     }
+    if (provider.protocol === 'google') {
+      return { data: { models: [], hint: 'Google (Gemini) 协议暂不支持获取模型列表，请手动输入模型名' } };
+    }
     const modelsUrl = buildApiUrl(provider.apiBaseUrl, '/v1/models');
     return (async () => {
       const result = await safeRequest({
@@ -194,16 +197,21 @@ function apiRouter(req, res, url, method, body, codexPort, ccPort) {
     const providers = getProviders();
     const provider = providers.find(p => p.id === body.providerId);
     if (!provider) return { error: 'API 源不存在', status: 404 };
-    const chatUrl = buildApiUrl(provider.apiBaseUrl,
-      provider.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions');
-    const verifyBody = {
-      model: body.modelName, max_tokens: 1,
-      messages: [{ role: 'user', content: 'hi' }],
-    };
+    let chatUrl, headers, verifyBody;
+    if (provider.protocol === 'google') {
+      chatUrl = buildApiUrl(provider.apiBaseUrl, `/v1/models/${body.modelName}:generateContent`);
+      headers = { 'Content-Type': 'application/json', 'x-goog-api-key': provider.apiKey };
+      verifyBody = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] };
+    } else {
+      chatUrl = buildApiUrl(provider.apiBaseUrl,
+        provider.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions');
+      headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` };
+      verifyBody = { model: body.modelName, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] };
+    }
     return (async () => {
       const result = await safeRequest({
         url: chatUrl, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
+        headers,
         timeoutMsg: '验证请求超时 (15s)',
       }, verifyBody, REQUEST_TIMEOUT);
       if (result.error) return { data: { ok: false, error: `验证请求失败: ${result.error}` } };
@@ -262,13 +270,21 @@ function apiRouter(req, res, url, method, body, codexPort, ccPort) {
     const providers = getProviders();
     const provider = providers.find(p => p.id === body.providerId);
     if (!provider) return { error: 'API 源不存在', status: 404 };
-    const chatUrl = buildApiUrl(provider.apiBaseUrl,
-      provider.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions');
-    const testBody = { model: 'test', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] };
+    let chatUrl, headers, testBody;
+    if (provider.protocol === 'google') {
+      chatUrl = buildApiUrl(provider.apiBaseUrl, '/v1/models/test:generateContent');
+      headers = { 'Content-Type': 'application/json', 'x-goog-api-key': provider.apiKey };
+      testBody = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] };
+    } else {
+      chatUrl = buildApiUrl(provider.apiBaseUrl,
+        provider.protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions');
+      headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` };
+      testBody = { model: 'test', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] };
+    }
     return (async () => {
       const result = await safeRequest({
         url: chatUrl, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
+        headers,
         timeoutMsg: '连接超时 (15s)',
       }, testBody, REQUEST_TIMEOUT);
       if (result.error) return { data: { ok: false, error: result.error } };
