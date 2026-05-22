@@ -25,20 +25,17 @@ class GoogleStreamTransformer {
     if (!googleObj || typeof googleObj !== 'object') return [];
     // 跳过 OpenCode Zen 心跳行 {"type":"ping","cost":"..."}
     if (googleObj.type === 'ping') return [];
-    // 跳过无 candidates 的行
-    if (!googleObj.candidates?.length) return [];
 
-    const chunks = [];
-    const candidate = googleObj.candidates[0];
-    const parts = candidate.content?.parts || [];
-
-    // 提取 usage
+    // 提取 usage（可能在独立行中，没有 candidates，必须提前读取）
     if (googleObj.usageMetadata) {
       const meta = googleObj.usageMetadata;
       if (meta.promptTokenCount) this.inputTokens = meta.promptTokenCount;
       if (meta.candidatesTokenCount) this.outputTokens = meta.candidatesTokenCount;
       if (meta.cachedContentTokenCount) this.cachedInputTokens = meta.cachedContentTokenCount;
     }
+
+    // 跳过无 candidates 的行
+    if (!googleObj.candidates?.length) return [];
 
     // 处理 finishReason
     const finishReason = candidate.finishReason;

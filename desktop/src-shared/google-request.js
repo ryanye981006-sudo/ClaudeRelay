@@ -2,6 +2,40 @@
 
 const { getThoughtSig, clearThoughtSig } = require('./google-stream');
 
+// 清理 JSON Schema 中 Google Gemini 不支持的字段
+// Google 只支持: type, description, properties, required, items, enum, nullable
+const SKIP_KEYWORDS = ['additionalProperties', 'minItems', 'maxItems', 'minLength', 'maxLength',
+  'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum',
+  'pattern', 'format', 'default', 'examples', 'title', 'oneOf', 'anyOf', 'allOf',
+  'uniqueItems', 'minProperties', 'maxProperties'];
+
+function cleanSchema(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(cleanSchema);
+
+  const cleaned = {};
+  for (const [key, value] of Object.entries(obj)) {
+    // 跳过 $ 前缀字段（$schema 等）
+    if (key.startsWith('$')) continue;
+    // 跳过 propertyNames
+    if (key === 'propertyNames') continue;
+    // 跳过 Google 不支持的 schema 约束字段
+    if (SKIP_KEYWORDS.includes(key)) continue;
+
+    // properties 内的 key 是属性名，不做关键字过滤，只递归清理 value（即属性 schema）
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const props = {};
+      for (const [propName, propSchema] of Object.entries(value)) {
+        props[propName] = cleanSchema(propSchema);
+      }
+      cleaned.properties = props;
+    } else {
+      cleaned[key] = cleanSchema(value);
+    }
+  }
+  return cleaned;
+}
+
 function openaiToGoogle(openaiBody) {
   const result = {};
 
@@ -95,7 +129,7 @@ function openaiToGoogle(openaiBody) {
         const fn = t.function || t;
         const decl = { name: fn.name || '' };
         if (fn.description) decl.description = fn.description;
-        if (fn.parameters) decl.parameters = fn.parameters;
+        if (fn.parameters) decl.parameters = cleanSchema(fn.parameters);
         return decl;
       }),
     }];
@@ -195,6 +229,9 @@ function googleToOpenAI(googleBody) {
       prompt_tokens: googleBody.usageMetadata?.promptTokenCount || 0,
       completion_tokens: googleBody.usageMetadata?.candidatesTokenCount || 0,
       total_tokens: googleBody.usageMetadata?.totalTokenCount || 0,
+      prompt_tokens_details: {
+        cached_tokens: googleBody.usageMetadata?.cachedContentTokenCount || 0,
+      },
     },
   };
   return result;

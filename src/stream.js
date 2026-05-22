@@ -13,7 +13,7 @@ function sseEvent(event, data) {
 }
 
 // Anthropic SSE 生成器
-function eventMessageStart(msgId, model, inputTokens) {
+function eventMessageStart(msgId, model, inputTokens, cachedInputTokens) {
   return sseEvent('message_start', {
     type: 'message_start',
     message: {
@@ -24,7 +24,12 @@ function eventMessageStart(msgId, model, inputTokens) {
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: inputTokens || 0, output_tokens: 0 },
+      usage: {
+        input_tokens: inputTokens || 0,
+        output_tokens: 0,
+        cache_read_input_tokens: cachedInputTokens || 0,
+        cache_creation_input_tokens: 0,
+      },
     },
   });
 }
@@ -52,14 +57,19 @@ function eventContentBlockStop(index) {
   });
 }
 
-function eventMessageDelta(stopReason, outputTokens, inputTokens) {
+function eventMessageDelta(stopReason, outputTokens, inputTokens, cachedInputTokens) {
   return sseEvent('message_delta', {
     type: 'message_delta',
     delta: {
       stop_reason: stopReason,
       stop_sequence: null,
     },
-    usage: { input_tokens: inputTokens || 0, output_tokens: outputTokens },
+    usage: {
+      input_tokens: inputTokens || 0,
+      output_tokens: outputTokens,
+      cache_read_input_tokens: cachedInputTokens || 0,
+      cache_creation_input_tokens: 0,
+    },
   });
 }
 
@@ -159,7 +169,7 @@ class StreamTransformer {
     // 首条有效 chunk → message_start
     if (!this.started && (delta.role || delta.content !== undefined || delta.reasoning_content !== undefined || delta.tool_calls)) {
       this.started = true;
-      events.push(eventMessageStart(this.msgId, this.model, this.inputTokens));
+      events.push(eventMessageStart(this.msgId, this.model, this.inputTokens, this.cachedInputTokens));
     }
     if (!this.started) return events;
 
@@ -261,7 +271,7 @@ class StreamTransformer {
     if (finishReason) {
       this.finished = true;
       events.push(...this._closeCurrentBlock());
-      events.push(eventMessageDelta(mapFinishReason(finishReason), this.outputTokens, this.inputTokens));
+      events.push(eventMessageDelta(mapFinishReason(finishReason), this.outputTokens, this.inputTokens, this.cachedInputTokens));
       events.push(eventMessageStop());
     }
 
@@ -271,6 +281,13 @@ class StreamTransformer {
   // 获取最终 token 统计（流结束后调用）
   getStats() {
     return { inputTokens: this.inputTokens, outputTokens: this.outputTokens, cachedInputTokens: this.cachedInputTokens };
+  }
+
+  // Google 路径专用：用后端返回的实际 token 覆盖本地估算
+  updateStats(inputTokens, outputTokens, cachedInputTokens) {
+    this.inputTokens = inputTokens || this.inputTokens;
+    this.outputTokens = outputTokens || this.outputTokens;
+    this.cachedInputTokens = cachedInputTokens || 0;
   }
 }
 

@@ -131,6 +131,10 @@ function fetchBackend(backend, openaiBody) {
           if (backend.protocol === 'google' && proxyRes.statusCode === 200) {
             parsed = googleToOpenAI(parsed);
           }
+          // 非 200 时记录错误详情（Google 协议）
+          if (proxyRes.statusCode !== 200 && backend.protocol === 'google') {
+            proxyLog(`[proxy] Google 错误详情: ${data.substring(0, 500)}`);
+          }
           resolve({ status: proxyRes.statusCode, headers: proxyRes.headers, body: parsed });
         }
         catch { resolve({ status: proxyRes.statusCode, headers: proxyRes.headers, body: data }); }
@@ -524,6 +528,13 @@ function streamGoogleRelay(backend, openaiBody, res, createTransformer, routingK
     if (streamEnded) return;
     streamEnded = true;
     clearInterval(heartbeat);
+    // 用 Google 后端返回的实际 token 更新外层 transformer
+    const googleStats = googleTransformer.getStats();
+    outerTransformer.updateStats(
+      googleStats.inputTokens - googleStats.cachedInputTokens,
+      googleStats.outputTokens,
+      googleStats.cachedInputTokens
+    );
     // 强制完成外层 transformer
     if (!outerTransformer.finished) {
       try {
@@ -578,6 +589,10 @@ function streamGoogleRelay(backend, openaiBody, res, createTransformer, routingK
         if (dataStr === '[DONE]') continue;
         try {
           const googleChunk = JSON.parse(dataStr);
+          // 调试：记录包含 usageMetadata 的行（可能没有 candidates）
+          if (googleChunk.usageMetadata) {
+            proxyLog(`[stream ${streamId}] Google SSE usageMetadata: ${dataStr.substring(0, 300)}`);
+          }
           // Google → OpenAI chunk 对象
           const openaiChunks = googleTransformer.processChunk(googleChunk);
           for (const oc of openaiChunks) {
@@ -585,26 +600,27 @@ function streamGoogleRelay(backend, openaiBody, res, createTransformer, routingK
             try {
               const events = outerTransformer.processChunk(oc);
               for (const evt of events) res.write(evt);
-            } catch {}
+            } catch (e) { proxyLog(`[stream ${streamId}] outerTransformer error: ${e.message}`); }
           }
-        } catch {}
+        } catch (e) { proxyLog(`[stream ${streamId}] SSE 解析错误: ${e.message} data=${dataStr.substring(0, 100)}`); }
       }
     });
 
     proxyRes.on('end', () => {
-      // 处理残留 buffer
+      // 处理残留 buffer（通常包含最后的 usageMetadata）
       if (buffer.trim() && buffer.trim().startsWith('data:')) {
         try {
           const dataStr = buffer.trim().slice(5).trim();
+          proxyLog(`[stream ${streamId}] Google SSE 结尾行: ${dataStr.substring(0, 400)}`);
           const googleChunk = JSON.parse(dataStr);
           const openaiChunks = googleTransformer.processChunk(googleChunk);
           for (const oc of openaiChunks) {
             try {
               const events = outerTransformer.processChunk(oc);
               for (const evt of events) res.write(evt);
-            } catch {}
+            } catch (e) { proxyLog(`[stream ${streamId}] outerTransformer error: ${e.message}`); }
           }
-        } catch {}
+        } catch (e) { proxyLog(`[stream ${streamId}] 结尾行解析错误: ${e.message}`); }
       }
       endStream('backend-end');
     });
