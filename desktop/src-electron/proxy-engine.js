@@ -842,16 +842,6 @@ function createCCServer(port) {
 
         proxyLog(`[claude] ← Anthropic routing=${anthropicBody.model} → ${backend.apiBaseUrl} model=${backend.modelName} stream=${anthropicBody.stream}`);
 
-        if (backend.protocol === 'google') {
-          // Google 协议暂不支持 Claude Code
-          proxyLog(`[claude] 拒绝 Google 后端: ${backend.apiBaseUrl}`);
-          const err = errorResponse('invalid_request_error',
-            `Google (Gemini) 协议暂不支持 Claude Code 客户端（${backend.modelName}），请使用 Codex 客户端。`,
-            400);
-          res.writeHead(err.statusCode, err.headers); res.end(err.body);
-          return;
-        }
-
         if (backend.protocol === 'anthropic') {
           // Anthropic 后端：原样透传，不做格式转换
           if (anthropicBody.stream) {
@@ -877,7 +867,7 @@ function createCCServer(port) {
             }
           }
         } else {
-          // OpenAI 后端：Anthropic → Chat Completions 转换
+          // OpenAI / Google 后端：Anthropic → Chat Completions 转换
           const openaiBody = anthropicToOpenAI(anthropicBody);
           proxyLog(`[claude] 转换后消息 (${openaiBody.messages.length}): ${openaiBody.messages.map((m, idx) => {
             const tc = m.tool_calls ? ` tool_calls=[${m.tool_calls.map(t => t.id).join(',')}]` : '';
