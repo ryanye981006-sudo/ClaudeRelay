@@ -37,6 +37,7 @@ class GoogleStreamTransformer {
       const meta = googleObj.usageMetadata;
       if (meta.promptTokenCount) this.inputTokens = meta.promptTokenCount;
       if (meta.candidatesTokenCount) this.outputTokens = meta.candidatesTokenCount;
+      if (meta.cachedContentTokenCount) this.cachedInputTokens = meta.cachedContentTokenCount;
     }
 
     // 处理 finishReason

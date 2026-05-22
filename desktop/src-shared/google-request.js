@@ -54,12 +54,11 @@ function openaiToGoogle(openaiBody) {
           let args = {};
           try { args = JSON.parse(fn.arguments || '{}'); } catch { args = {}; }
           const fcPart = { functionCall: { name, args } };
-          // 回注 thoughtSignature（从缓存中查找）
+          // 回注 thoughtSignature（从缓存中查找，不清除——同一会话中历史会反复发送）
           if (tc.id) {
             const sig = getThoughtSig(tc.id);
             if (sig) {
               fcPart.thoughtSignature = sig;
-              clearThoughtSig(tc.id);
             }
           }
           parts.push(fcPart);

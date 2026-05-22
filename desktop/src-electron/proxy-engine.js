@@ -536,7 +536,7 @@ function streamGoogleRelay(backend, openaiBody, res, createTransformer, routingK
       logUsage({
         model: routingKey || backend.modelName, category,
         inputTokens: stats.inputTokens,
-        cachedInputTokens: 0,
+        cachedInputTokens: stats.cachedInputTokens,
         outputTokens: stats.outputTokens,
       });
     }
