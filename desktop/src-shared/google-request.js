@@ -70,7 +70,17 @@ function openaiToGoogle(openaiBody) {
       // tool 消息在 Google 中转为 user 角色 + functionResponse
       const name = callIdToName.get(msg.tool_call_id) || 'unknown';
       let response = {};
-      try { response = JSON.parse(msg.content || '{}'); } catch {
+      try {
+        const parsed = JSON.parse(msg.content || '{}');
+        // Google API 要求 functionResponse.response 必须是 object，数组不行
+        if (Array.isArray(parsed)) {
+          response = { result: parsed };
+        } else if (typeof parsed === 'object' && parsed !== null) {
+          response = parsed;
+        } else {
+          response = { result: msg.content || '' };
+        }
+      } catch {
         response = { result: msg.content || '' };
       }
       contents.push({ role: 'user', parts: [{ functionResponse: { name, response } }] });
