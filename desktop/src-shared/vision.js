@@ -16,7 +16,7 @@ const visionAllowedModels = [
   'gemini-1\\.5',
   'gemini-2\\.0',
   'gemini-2\\.5',
-  'gemini-3(?:\\.\\d)?-(?:flash|pro)(?:-preview)?',
+  'gemini-3(?:\\.\\d)?(?:-[\\w-]+)?',
   'gemini-(flash|pro|flash-lite)-latest',
   'gemini-exp',
   'claude-3',
