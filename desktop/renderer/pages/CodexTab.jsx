@@ -56,6 +56,10 @@ export default function CodexTab() {
   const [addTargetCfgId, setAddTargetCfgId] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
 
+  // 错误提示
+  const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
   const loadData = useCallback(async () => {
     const [cfgs, providers] = await Promise.all([
       api.getConfigs('codex'),
@@ -70,13 +74,14 @@ export default function CodexTab() {
   // 新建配置
   const handleAddConfig = async () => {
     if (!newCfgName.trim()) return;
+    setErrorMsg('');
     try {
       await api.addConfig('codex', newCfgName.trim());
       setNewCfgName('');
       setShowNewCfg(false);
       loadData();
     } catch (e) {
-      // ignore duplicate
+      setErrorMsg(`创建配置失败: ${e.message || '未知错误'}`);
     }
   };
 
@@ -89,10 +94,13 @@ export default function CodexTab() {
 
   // 启用配置 → 写入配置文件
   const handleActivate = async (configId) => {
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
       await api.setActiveConfig('codex', configId);
+      setSuccessMsg('配置已启用，config.toml 写入成功，重启 Codex 后生效');
     } catch (e) {
-      // ignore
+      setErrorMsg(`写入 Codex 配置失败: ${e.message || '未知错误'}。请检查 ~/.codex/config.toml 权限，或手动写入。`);
     }
     loadData();
   };
@@ -158,6 +166,14 @@ export default function CodexTab() {
         <div style={{ ...s.cfgCard, padding: 16, marginBottom: 16, textAlign: 'center' }}>
           <span style={{ color: '#787c99' }}>暂无配置，请新建配置</span>
         </div>
+      )}
+
+      {/* 错误/成功提示 */}
+      {errorMsg && (
+        <div style={{ background: '#3a1a1a', border: '1px solid #6b3d3d', color: '#f7768e', padding: '10px 14px', borderRadius: 6, fontSize: 13, marginBottom: 12, whiteSpace: 'pre-wrap' }}>{errorMsg}</div>
+      )}
+      {successMsg && (
+        <div style={s.successMsg}>{successMsg}</div>
       )}
 
       {/* 配置列表 */}

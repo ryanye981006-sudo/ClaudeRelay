@@ -117,13 +117,16 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('remove-model-from-config', (_, category, configId, modelId, slotIndex) => removeModelFromConfig(category, configId, modelId, slotIndex));
   ipcMain.handle('set-active-config', (_, category, configId) => {
-    setActiveConfig(category, configId);
+    // 先写入配置文件，成功后再更新 data.json
     if (category === 'codex') {
-      const activeCfg = getActiveConfig('codex');
-      if (activeCfg && activeCfg.models.length > 0) {
-        writeCodexConfig(modelRoutingKey(activeCfg.models[0]), CODEX_PORT);
+      const cfgs = getConfigs('codex') || [];
+      const cfg = cfgs.find(c => c.id === configId);
+      if (cfg && cfg.models && cfg.models.length > 0) {
+        writeCodexConfig(modelRoutingKey(cfg.models[0]), CODEX_PORT);
       }
-    } else if (category === 'claude') {
+    }
+    setActiveConfig(category, configId);
+    if (category === 'claude') {
       const activeCfg = getActiveConfig('claude');
       if (activeCfg) {
         const routingKeys = (activeCfg.modelIds || []).slice(0, 4).map(mid => {

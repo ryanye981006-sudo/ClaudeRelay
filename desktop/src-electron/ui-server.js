@@ -142,13 +142,16 @@ function apiRouter(req, res, url, method, body, codexPort, ccPort) {
     return { data: { ok: true } };
   }
   if (method === 'POST' && pathname === '/api/config/set-active') {
-    setActiveConfig(body.category, body.configId);
+    // 先写入配置文件，成功后再更新 data.json，避免 data.json 已改但文件写入失败
     if (body.category === 'codex') {
-      const activeCfg = getActiveConfig('codex');
-      if (activeCfg && activeCfg.models.length > 0) {
-        writeCodexConfig(modelRoutingKey(activeCfg.models[0]), codexPort);
+      const cfgs = getConfigs('codex') || [];
+      const cfg = cfgs.find(c => c.id === body.configId);
+      if (cfg && cfg.models && cfg.models.length > 0) {
+        writeCodexConfig(modelRoutingKey(cfg.models[0]), codexPort);
       }
-    } else if (body.category === 'claude') {
+    }
+    setActiveConfig(body.category, body.configId);
+    if (body.category === 'claude') {
       const activeCfg = getActiveConfig('claude');
       if (activeCfg) {
         const routingKeys = (activeCfg.modelIds || []).slice(0, 4).map(mid => {

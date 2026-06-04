@@ -36,6 +36,7 @@ disable_response_storage = true
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = false
+api_key = "sk-dummy"
 base_url = "http://127.0.0.1:18889"
 `;
 
@@ -56,19 +57,56 @@ function ensureConfigFile() {
 // proxyPort: 代理端口
 function writeCodexConfig(routingKey, proxyPort) {
   const configPath = ensureConfigFile();
-  let content = fs.readFileSync(configPath, 'utf-8');
+  let content;
+  try {
+    content = fs.readFileSync(configPath, 'utf-8');
+  } catch (e) {
+    throw new Error(`无法读取 Codex 配置文件 ${configPath}: ${e.message}`);
+  }
 
-  // 替换 model 字段
-  content = content.replace(/^model\s*=\s*".*"$/m, `model = "${routingKey}"`);
-
-  // 替换 base_url 字段
   const baseUrl = `http://127.0.0.1:${proxyPort}`;
-  content = content.replace(/^base_url\s*=\s*".*"$/m, `base_url = "${baseUrl}"`);
 
-  // 原子写入
+  // Codex 自己创建的 config.toml 可能没有 model_provider/model/base_url 等字段
+  // 检测是否已有 [model_providers.custom] 块，没有则整体插入
+  if (content.includes('[model_providers.custom]')) {
+    // CCRelay 格式：替换已有字段
+    content = content.replace(/^model\s*=\s*".*"$/m, `model = "${routingKey}"`);
+    content = content.replace(/^model_provider\s*=\s*".*"$/m, 'model_provider = "custom"');
+    content = content.replace(/^base_url\s*=\s*".*"$/m, `base_url = "${baseUrl}"`);
+    // 确保 api_key 存在
+    if (!/^api_key\s*=/m.test(content)) {
+      content = content.replace(
+        /^requires_openai_auth\s*=\s*.*$/m,
+        'requires_openai_auth = false\napi_key = "sk-dummy"'
+      );
+    }
+  } else {
+    // Codex 原生格式：在文件顶部插入 CCRelay 配置块
+    const block = `model_provider = "custom"
+model = "${routingKey}"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = false
+api_key = "sk-dummy"
+base_url = "${baseUrl}"
+
+`;
+    content = block + content;
+  }
+
+  // 原子写入：先写临时文件再 rename，避免写入中断导致文件损坏
   const tmpFile = configPath + '.tmp';
-  fs.writeFileSync(tmpFile, content, 'utf-8');
-  fs.renameSync(tmpFile, configPath);
+  try {
+    fs.writeFileSync(tmpFile, content, 'utf-8');
+    fs.renameSync(tmpFile, configPath);
+  } catch (e) {
+    try { fs.unlinkSync(tmpFile); } catch {}
+    throw new Error(`无法写入 Codex 配置文件 ${configPath}: ${e.message}。请关闭可能占用该文件的程序后重试。`);
+  }
 
   // 设置 NO_PROXY，让本地请求绕过系统代理（Clash 等）
   ensureNoProxy();
